@@ -1,0 +1,21 @@
+[package]
+name = "minibrowser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation", "block2"] }
+objc2-core-foundation = "0.3"
+objc2-foundation = { version = "0.3.2", features = ["objc2-core-foundation"] }
+libc = "0.2"
+block2 = "0.6"
+objc2-web-kit = { version = "0.3.2", features = ["WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "block2"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
