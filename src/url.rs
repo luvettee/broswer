@@ -1,7 +1,23 @@
 pub const HOME: &str = "https://duckduckgo.com";
+/// New tabs show a blank start page; the address field stays empty for it.
+pub const NEW_TAB: &str = "about:blank";
+
+/// What the address field shows for a page.
+pub fn address(url: &str) -> &str {
+    if url == NEW_TAB { "" } else { url }
+}
+
+/// An address as shown in lists: no `https://`, no trailing slash on a bare host.
+pub fn display_address(url: &str) -> &str {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    match rest.strip_suffix('/') {
+        Some(host) if !host.contains('/') => host,
+        _ => rest,
+    }
+}
 
 pub fn display_title(url: &str) -> String {
-    if url == "about:blank" {
+    if url == NEW_TAB {
         return "New Tab".into();
     }
     if let Some(rest) = url
@@ -16,6 +32,26 @@ pub fn display_title(url: &str) -> String {
             .to_string();
     }
     "Page".into()
+}
+
+/// The site a page belongs to, for per-site settings: lowercase host without
+/// `www.` or port. Only web pages have one.
+pub fn site(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = if host.starts_with('[') {
+        host.split_inclusive(']').next()?
+    } else {
+        host.split(':').next()?
+    };
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Navigation policy. Keep web URLs intact: rewriting a sign-in redirect or
@@ -67,6 +103,19 @@ mod tests {
             normalize("rust borrow checker"),
             "https://duckduckgo.com/?q=rust+borrow+checker"
         );
+    }
+
+    #[test]
+    fn site_names() {
+        assert_eq!(
+            site("https://www.Example.com:8443/a?b"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            site("http://user@news.example.org/"),
+            Some("news.example.org".into())
+        );
+        assert_eq!(site("about:blank"), None);
     }
 
     #[test]

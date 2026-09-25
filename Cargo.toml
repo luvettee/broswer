@@ -7,7 +7,8 @@ edition = "2024"
 tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation", "block2"] }
+objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core", "block2"] }
+objc2-quartz-core = "0.3"
 objc2-core-foundation = "0.3"
 objc2-foundation = { version = "0.3.2", features = ["objc2-core-foundation"] }
 libc = "0.2"
