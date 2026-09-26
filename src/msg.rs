@@ -105,6 +105,7 @@ pub enum Msg {
     ToggleFilterList(usize),
     ToggleGenericHiding,
     ToggleLockdown,
+    SetIdleMinutes(Option<u8>),
     UpdateFilters,
     EditCustomFilters,
 }
@@ -171,6 +172,7 @@ impl Msg {
             Msg::ToggleFilterList(i) => format!("ToggleFilterList({i})"),
             Msg::ToggleGenericHiding => "ToggleGenericHiding".into(),
             Msg::ToggleLockdown => "ToggleLockdown".into(),
+            Msg::SetIdleMinutes(minutes) => format!("SetIdleMinutes({minutes:?})"),
             Msg::UpdateFilters => "UpdateFilters".into(),
             Msg::EditCustomFilters => "EditCustomFilters".into(),
         }

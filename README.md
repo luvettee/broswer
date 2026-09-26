@@ -18,7 +18,7 @@ The script creates `dist/Browser.app` and `dist/Browser-Apple-Silicon.zip`. It s
 ## Using the browser
 
 - Enter a web address or search in the sidebar field. `⌘L` focuses it; `Esc` puts the page address back.
-- Open a tab with the **New tab** button or `⌘T`; close one with `⌘W`, and reopen it with `⇧⌘T`.
+- Open a tab with the **New tab** button or `⌘T`; the start page shows bookmark and frequently visited tiles with names and icons. The address field is ready for typing. Close a tab with `⌘W`, and reopen it with `⇧⌘T`.
 - `⌘`-click or middle-click a link to open it in a background tab (add `⇧` to switch to it). Links that open a new window become tabs; sign-in pop-ups keep their own window.
 - Drag tabs to reorder them. Middle-click a tab to close it; right-click for Reload, Duplicate, Copy Address, and Close Other Tabs / Tabs Below.
 - Switch tabs with `⌘1` through `⌘9`, `Control-Tab`, or `⇧⌘[` / `⇧⌘]`.
@@ -28,12 +28,11 @@ The script creates `dist/Browser.app` and `dist/Browser-Apple-Silicon.zip`. It s
 - `⌘P` prints. `⌃⌘F` enters full screen.
 - Pointing at a link shows its address at the bottom of the page.
 - Open tabs are restored at the next launch. Only the selected tab loads right away; the others load when you open them, so a large session costs no extra memory.
-- Memory is kept under a 100 MB budget (app and WebKit processes together): when it goes over, background tabs are unloaded, least recently used first, until it fits. Unloaded tabs reload when you open them. At most three background tabs stay loaded, and ones unused for ten minutes are unloaded. Tabs playing media or using the camera or microphone are kept. The page in front is never unloaded, so a heavy site can use more than the budget by itself.
+- **Protection → Memory → Unload Inactive Tabs After** controls routine background-tab unloading. The default is 30 minutes; choose **Never**, a preset, or **Custom…** for any whole number of minutes from 1 to 60. The setting persists across launches. Unloaded tabs reload when opened. Tabs playing media or using the camera or microphone are kept; the selected tab is never unloaded by this timer.
 - WebKit is configured for memory over speed: no spare page process is started ahead of time, and no old pages or processes are cached for going back, so Back reloads the page.
 - Video and audio don't autoplay; click to play. Autoplaying video can cost hundreds of megabytes.
 - **Protection → Memory → Lockdown Mode** (on by default) uses WebKit's Lockdown Mode: no JavaScript compiler, WebGL, or other complex web features. Heavy pages use roughly 60–100 MB less, but big web apps run slower. Turning it off reloads the current tab.
 - **Protection → Memory → Hide Ads on Every Site** (off by default) adds EasyList's site-independent hiding rules. Network blocking and site-specific hiding work without it; it costs up to about 90 MB more on heavy news pages.
-- When the page in front goes over the budget by itself, the browser asks WebKit to purge caches, at most once a minute. WebKit only accepts this request system-wide, so other WebKit apps such as Safari and Mail also drop caches when it happens.
 - The sidebar follows the system's light or dark appearance.
 
 ## Ad and tracker blocking
@@ -51,7 +50,7 @@ Cookies, site storage, and cache persist between launches. Downloads go to the M
 
 ## Current limits
 
-- The memory figure in the sidebar counts the app together with the WebKit processes that load its pages (hover it for the split). When macOS runs short of memory, background tabs that aren't playing media are unloaded.
+- The memory figure in the sidebar counts the app together with the WebKit processes that load its pages (hover it for the split). When macOS reports memory pressure, background tabs that aren't playing media can be unloaded even if routine unloading is set to **Never**.
 - Passkeys for arbitrary websites require Apple's approved browser passkey entitlement and a properly provisioned signing identity. The ordinary ad hoc build does not have that entitlement. `macos/Browser.entitlements` and the optional `BROWSER_SIGNING_IDENTITY` build setting are prepared for a developer account that has Apple's approval.
 - Some websites may restrict sign-in inside WebKit-based browsers independently of this app.
 - WebKit does not report blocked requests to the app, so the browser cannot show a per-page blocked count. Video ads served from the same domain as the content (for example on YouTube) need script injection, which this blocker does not do.

@@ -2,12 +2,14 @@ mod blocker;
 mod chrome;
 mod favicon;
 mod filters;
+mod idle;
 mod log;
 mod memory;
 mod msg;
 mod page;
 mod places;
 mod session;
+mod start_page;
 mod tabs;
 mod url;
 
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use blocker::Blocker;
 use chrome::Chrome;
+use idle::IdleSetting;
 use msg::{Msg, MsgSender};
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use page::Page;
@@ -36,17 +39,7 @@ const STARTUP_RULES_WAIT: Duration = Duration::from_secs(3);
 const HOUSEKEEPING: Duration = Duration::from_secs(2);
 /// Session writes wait for a quiet moment so page loads never touch the disk.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(1);
-/// Background tabs unused this long are unloaded to free their memory.
-const IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
-/// Beyond this many loaded background tabs, the least recently used unload.
-const MAX_BACKGROUND_PAGES: usize = 3;
 const IDLE_CHECK_EVERY: Duration = Duration::from_secs(30);
-/// Everything together (app and WebKit processes) is kept under this by
-/// unloading background tabs, least recently used first. The page in front
-/// is never unloaded, so a heavy site on its own can still exceed it.
-const MEMORY_BUDGET: u64 = 100 * 1024 * 1024;
-/// How often WebKit may be asked to purge caches while still over budget.
-const PURGE_EVERY: Duration = Duration::from_secs(60);
 
 struct Browser {
     chrome: Chrome,
@@ -62,6 +55,7 @@ struct Browser {
     save_at: Option<Instant>,
     history: History,
     bookmarks: Bookmarks,
+    idle_setting: IdleSetting,
     /// The address last written to history for each tab.
     recorded: HashMap<u32, String>,
     /// When each tab was last in front, for unloading idle ones.
@@ -69,8 +63,6 @@ struct Browser {
     /// Tabs with an unload check in flight.
     idle_checks: HashSet<u32>,
     next_idle_check: Instant,
-    /// Earliest time WebKit may be asked to purge caches again.
-    next_purge: Instant,
 }
 
 fn main() -> wry::Result<()> {
@@ -102,11 +94,11 @@ fn main() -> wry::Result<()> {
         save_at: None,
         history: History::load(),
         bookmarks: Bookmarks::load(),
+        idle_setting: IdleSetting::load(),
         recorded: HashMap::new(),
         last_seen: HashMap::new(),
         idle_checks: HashSet::new(),
         next_idle_check: Instant::now() + IDLE_CHECK_EVERY,
-        next_purge: Instant::now() + PURGE_EVERY / 4,
     };
     memory::watch_pressure(tx.clone());
     browser.blocker.rebuild(&tx);
@@ -115,6 +107,9 @@ fn main() -> wry::Result<()> {
     }
     browser.chrome.set_bookmark_menu(&browser.bookmarks);
     browser.chrome.set_history_menu(&browser.history);
+    browser
+        .chrome
+        .set_idle_minutes(browser.idle_setting.minutes);
     browser.refresh();
     browser.sync_protection();
 
@@ -132,9 +127,6 @@ fn main() -> wry::Result<()> {
         if now >= next_housekeeping {
             let usage = memory::usage();
             browser.chrome.set_memory_usage(usage);
-            if let Some(usage) = usage {
-                browser.keep_within_budget(usage.total());
-            }
             browser.blocker.tick(&tx);
             browser.sync_protection();
             if browser.bookmarks.reload_if_edited() {
@@ -221,22 +213,23 @@ impl Browser {
         self.bookmarks.save();
     }
 
-    /// Frees web views of background tabs that are idle or over the limit.
+    /// Frees web views of background tabs after the chosen inactive interval.
     /// Pages playing media or using the camera or microphone are kept.
     fn unload_idle_tabs(&mut self) {
+        let Some(timeout) = self.idle_setting.duration() else {
+            return;
+        };
         let now = Instant::now();
-        let mut background: Vec<(u32, Instant)> = self
+        let background: Vec<(u32, Instant)> = self
             .pages
             .keys()
             .filter(|id| **id != self.tabs.active)
             .map(|id| (*id, self.last_seen.get(id).copied().unwrap_or(now)))
             .collect();
-        background.sort_by_key(|(_, seen)| *seen);
-        let excess = background.len().saturating_sub(MAX_BACKGROUND_PAGES);
-        for (index, (id, seen)) in background.into_iter().enumerate() {
-            let idle = now.duration_since(seen) >= IDLE_UNLOAD;
+        for (id, seen) in background {
+            let idle = now.duration_since(seen) >= timeout;
             let loading = self.tabs.get(id).is_some_and(|t| t.loading);
-            if (index < excess || idle)
+            if idle
                 && !loading
                 && self.idle_checks.insert(id)
                 && let Some(page) = self.pages.get(&id)
@@ -246,59 +239,14 @@ impl Browser {
         }
     }
 
-    /// Unloads background tabs, oldest first, until the ones left fit the budget.
-    /// A tab's process may be shared with others; its memory only counts as
-    /// freed once no remaining tab uses it.
-    fn keep_within_budget(&mut self, total: u64) {
-        if total <= MEMORY_BUDGET {
-            return;
-        }
-        let mut excess = total - MEMORY_BUDGET;
-        let now = Instant::now();
-        let mut background: Vec<(u32, Instant)> = self
-            .pages
-            .keys()
-            .filter(|id| **id != self.tabs.active && !self.idle_checks.contains(id))
-            .map(|id| (*id, self.last_seen.get(id).copied().unwrap_or(now)))
-            .collect();
-        background.sort_by_key(|(_, seen)| *seen);
-        // Nothing left to unload: the page in front is over budget by itself.
-        if background.is_empty() {
-            // Purging mid-load frees little; wait for the page to settle.
-            let loading = self.tabs.active_tab().is_some_and(|t| t.loading);
-            if !loading && self.idle_checks.is_empty() && now >= self.next_purge {
-                self.next_purge = now + PURGE_EVERY;
-                log::log("over memory budget with one page; asking WebKit to purge");
-                memory::purge_webkit();
-            }
-            return;
-        }
-        let mut kept: Vec<Option<i32>> = self.pages.iter().map(|(_, p)| p.process_id()).collect();
-        for (id, _) in background {
-            let Some(page) = self.pages.get(&id) else {
-                continue;
-            };
-            let pid = page.process_id();
-            if let Some(i) = kept.iter().position(|p| *p == pid) {
-                kept.swap_remove(i);
-            }
-            let freed = pid
-                .filter(|pid| !kept.contains(&Some(*pid)))
-                .and_then(memory::footprint)
-                .unwrap_or(0);
-            self.idle_checks.insert(id);
-            page.check_idle(&self.tx);
-            log::log(&format!("over memory budget; unloading tab {id}"));
-            excess = excess.saturating_sub(freed);
-            if excess == 0 {
-                break;
-            }
-        }
-    }
-
     /// Frees every background tab that is not playing media or capturing.
     fn unload_background_tabs(&mut self) {
-        let ids: Vec<u32> = self.pages.keys().copied().filter(|id| *id != self.tabs.active).collect();
+        let ids: Vec<u32> = self
+            .pages
+            .keys()
+            .copied()
+            .filter(|id| *id != self.tabs.active)
+            .collect();
         for id in ids {
             if self.idle_checks.insert(id)
                 && let Some(page) = self.pages.get(&id)
@@ -323,11 +271,17 @@ impl Browser {
             return;
         };
         let (url, zoom) = (tab.url.clone(), tab.zoom);
+        let start_page = if url == url::NEW_TAB {
+            start_page::render(&self.bookmarks, &self.history)
+        } else {
+            String::new()
+        };
         match Page::new(
             self.chrome.pages(),
             &mut self.ctx,
             id,
             &url,
+            &start_page,
             self.tx.clone(),
             self.blocker.rules(),
             self.blocker.lockdown(),
@@ -389,6 +343,7 @@ impl Browser {
             page.focus();
         }
         if new_tab {
+            self.chrome.reset_address(&self.tabs);
             self.chrome.focus_url();
         }
         self.sync_navigation();
@@ -506,6 +461,11 @@ impl Browser {
                 self.unload_background_tabs();
                 self.chrome.trim_caches();
                 memory::trim();
+            }
+            Msg::SetIdleMinutes(minutes) => {
+                self.idle_setting.minutes = minutes;
+                self.idle_setting.save();
+                self.chrome.set_idle_minutes(minutes);
             }
             Msg::FiltersConverted {
                 generation,
@@ -681,9 +641,10 @@ impl Browser {
                 if let Some(tab) = self.tabs.get(id) {
                     let board = NSPasteboard::generalPasteboard();
                     board.clearContents();
-                    board.setString_forType(&objc2_foundation::NSString::from_str(&tab.url), unsafe {
-                        NSPasteboardTypeString
-                    });
+                    board.setString_forType(
+                        &objc2_foundation::NSString::from_str(&tab.url),
+                        unsafe { NSPasteboardTypeString },
+                    );
                 }
             }
             Msg::Move(id, index) => {
@@ -715,7 +676,12 @@ impl Browser {
                 }
                 match self.pages.get(&active) {
                     Some(page) => {
-                        page.load(&address);
+                        let start_page = if address == url::NEW_TAB {
+                            start_page::render(&self.bookmarks, &self.history)
+                        } else {
+                            String::new()
+                        };
+                        page.load(&address, &start_page);
                         page.focus();
                     }
                     None => self.activate(active),

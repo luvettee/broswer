@@ -16,11 +16,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions as Mask, NSBezelStyle, NSBorderType, NSButton, NSButtonType,
+    NSAutoresizingMaskOptions as Mask, NSBezelStyle, NSBorderType, NSBox, NSButton, NSButtonType,
     NSCellImagePosition, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSEventMask, NSFocusRingType, NSImageView, NSLineBreakMode, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSScrollView, NSSwitch, NSTextAlignment, NSTextField, NSView,
-    NSBox, NSMenu, NSMenuItem, NSShadow, NSTrackingArea, NSTrackingAreaOptions,
+    NSEvent, NSEventMask, NSFocusRingType, NSImageView, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView, NSShadow, NSSwitch,
+    NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindow, NSWindowButton,
 };
@@ -33,9 +33,7 @@ use crate::log;
 use crate::msg::{Msg, MsgSender};
 use crate::places::{Bookmarks, History, Suggestion};
 use crate::tabs::TabManager;
-use kit::{
-    WEIGHT_MEDIUM, WEIGHT_SEMIBOLD, fill, font, icon_button, label, ns, rect, symbol, tint,
-};
+use kit::{WEIGHT_MEDIUM, WEIGHT_SEMIBOLD, fill, font, icon_button, label, ns, rect, symbol, tint};
 use menu::{ADDRESS_TAG, Actions, BOOKMARKS_FIXED, HISTORY_FIXED, ProtectionMenu};
 use tablist::TabList;
 
@@ -139,11 +137,14 @@ fn watch(
     exit: Option<fn() -> Msg>,
 ) -> Retained<Hover> {
     let hover: Retained<Hover> = unsafe {
-        msg_send![super(Hover::alloc(mtm).set_ivars(HoverIvars {
-            tx: tx.clone(),
-            enter,
-            exit,
-        })), init]
+        msg_send![
+            super(Hover::alloc(mtm).set_ivars(HoverIvars {
+                tx: tx.clone(),
+                enter,
+                exit,
+            })),
+            init
+        ]
     };
     let area = unsafe {
         NSTrackingArea::initWithRect_options_owner_userInfo(
@@ -267,7 +268,14 @@ impl Chrome {
 
         // Navigation shares the title bar row with the traffic lights.
         let nav_y = ch - TITLEBAR_H + 7.0;
-        let back = icon_button(mtm, target, sel!(goBack:), "chevron.left", "Back (⌘[)", 14.0);
+        let back = icon_button(
+            mtm,
+            target,
+            sel!(goBack:),
+            "chevron.left",
+            "Back (⌘[)",
+            14.0,
+        );
         let forward = icon_button(
             mtm,
             target,
@@ -317,8 +325,12 @@ impl Chrome {
         address_icon.setFrame(rect(22.0, address_y + 8.0, 16.0, 16.0));
         address_icon.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
         address_icon.setAutoresizingMask(top_pin);
-        if let Some(image) = symbol("magnifyingglass", "Search or enter address", 11.0, WEIGHT_MEDIUM)
-        {
+        if let Some(image) = symbol(
+            "magnifyingglass",
+            "Search or enter address",
+            11.0,
+            WEIGHT_MEDIUM,
+        ) {
             address_icon.setImage(Some(&image));
         }
         root.addSubview(&address_icon);
@@ -462,8 +474,7 @@ impl Chrome {
         site_switch.setAutoresizingMask(bottom_pin);
         site_switch.setEnabled(false);
         root.addSubview(&site_switch);
-        let protection_detail =
-            label(mtm, "Starting…", 12.0, 0.0, &NSColor::secondaryLabelColor());
+        let protection_detail = label(mtm, "Starting…", 12.0, 0.0, &NSColor::secondaryLabelColor());
         protection_detail.setFrame(rect(cx + 12.0, card_y + 26.0, W - 44.0, 16.0));
         protection_detail.setAutoresizingMask(bottom_pin);
         root.addSubview(&protection_detail);
@@ -506,15 +517,32 @@ impl Chrome {
         memory_label.setAutoresizingMask(bottom_pin);
         root.addSubview(&memory_label);
 
-        let edge = fill(mtm, rect(W - 1.0, 0.0, 1.0, ch), &NSColor::separatorColor(), 0.0);
+        let edge = fill(
+            mtm,
+            rect(W - 1.0, 0.0, 1.0, ch),
+            &NSColor::separatorColor(),
+            0.0,
+        );
         edge.setAutoresizingMask(Mask::ViewHeightSizable);
         root.addSubview(&edge);
 
         content_view.addSubview(&root);
         let suggestions = suggest::Suggestions::new(mtm, &content_view, &actions);
         let hovers = vec![
-            watch(mtm, &edge_strip, &actions.tx(), Some(|| Msg::SidebarPeek(true)), None),
-            watch(mtm, &root, &actions.tx(), None, Some(|| Msg::SidebarPeek(false))),
+            watch(
+                mtm,
+                &edge_strip,
+                &actions.tx(),
+                Some(|| Msg::SidebarPeek(true)),
+                None,
+            ),
+            watch(
+                mtm,
+                &root,
+                &actions.tx(),
+                None,
+                Some(|| Msg::SidebarPeek(false)),
+            ),
         ];
         log::log("native sidebar built");
 
@@ -679,7 +707,13 @@ impl Chrome {
             .iter()
             .map(|b| (b.title.clone(), b.url.clone(), self.icon_for(&b.url)))
             .collect();
-        menu::fill_places(&self.actions, &self.bookmarks_menu, BOOKMARKS_FIXED, true, &entries);
+        menu::fill_places(
+            &self.actions,
+            &self.bookmarks_menu,
+            BOOKMARKS_FIXED,
+            true,
+            &entries,
+        );
     }
 
     pub fn set_history_menu(&mut self, history: &History) {
@@ -687,7 +721,13 @@ impl Chrome {
             .recent(RECENT_HISTORY)
             .map(|v| (v.title.clone(), v.url.clone(), self.icon_for(&v.url)))
             .collect();
-        menu::fill_places(&self.actions, &self.history_menu, HISTORY_FIXED, false, &entries);
+        menu::fill_places(
+            &self.actions,
+            &self.history_menu,
+            HISTORY_FIXED,
+            false,
+            &entries,
+        );
     }
 
     fn icon_for(&mut self, url: &str) -> Option<Retained<objc2_app_kit::NSImage>> {
@@ -979,7 +1019,8 @@ impl Chrome {
             }
         }
 
-        self.site_switch.setEnabled(status.enabled && site.is_some());
+        self.site_switch
+            .setEnabled(status.enabled && site.is_some());
         self.site_switch
             .setState(if protected || site.is_none() && status.enabled {
                 NSControlStateValueOn
@@ -1015,6 +1056,27 @@ impl Chrome {
     pub fn focus_url(&mut self) {
         self.peek(true);
         unsafe { self.field.selectText(None) };
+    }
+
+    pub fn set_idle_minutes(&self, minutes: Option<u8>) {
+        self.actions.set_current_idle_minutes(minutes);
+        for menu in &self.menus {
+            for item in &menu.idle_minutes {
+                let selected = minutes.map_or(item.tag() == 0, |m| item.tag() == m as isize);
+                item.setState(if selected {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+            }
+            menu.custom_idle.setState(
+                if minutes.is_some_and(|m| ![1, 5, 10, 15, 30, 45, 60].contains(&m)) {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                },
+            );
+        }
     }
 
     pub fn scroll_to_active_tab(&self, tabs: &TabManager) {

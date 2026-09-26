@@ -13,14 +13,13 @@ use objc2::runtime::{
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSPrintInfo, NSView, NSWindow};
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSKeyValueObservingOptions,
-    NSObjectNSKeyValueObserverRegistration, NSString,
+    MainThreadMarker, NSBundle, NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration,
+    NSString,
 };
 use objc2_web_kit::{
-    WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKFindConfiguration, WKFindResult, WKMediaCaptureState,
-    WKMediaPlaybackState, WKScriptMessage,
-    WKScriptMessageHandler, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
-    WKWebViewConfiguration,
+    WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKFindConfiguration, WKFindResult,
+    WKMediaCaptureState, WKMediaPlaybackState, WKScriptMessage, WKScriptMessageHandler,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration,
 };
 use wry::raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
@@ -71,10 +70,6 @@ if(!best&&/^https?:$/.test(location.protocol))best=location.origin+'/favicon.ico
 if(best)post('i'+best)});
 })();"#;
 
-/// The start page for new tabs: empty, and dark when the system is.
-const START_PAGE: &str = "<!doctype html><meta name=color-scheme content='light dark'>\
-<title>New Tab</title><style>html{background:Canvas}</style>";
-
 pub const ZOOM_STEPS: [f64; 13] = [
     0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
 ];
@@ -101,7 +96,10 @@ fn build_lean_pool() -> Option<Retained<AnyObject>> {
         (c"setUsesWebProcessCache:", false),
         (c"setPageCacheEnabled:", false),
         (c"setAlwaysKeepAndReuseSwappedProcesses:", false),
-        (c"setSuspendsWebProcessesAggressivelyOnMemoryPressure:", true),
+        (
+            c"setSuspendsWebProcessesAggressivelyOnMemoryPressure:",
+            true,
+        ),
     ];
     let config_class = AnyClass::get(c"_WKProcessPoolConfiguration")?;
     let pool_class = AnyClass::get(c"WKProcessPool")?;
@@ -247,6 +245,7 @@ impl Page {
         ctx: &mut WebContext,
         id: u32,
         address: &str,
+        start_page: &str,
         tx: MsgSender,
         rules: &[Retained<WKContentRuleList>],
         lockdown: bool,
@@ -254,8 +253,7 @@ impl Page {
         let mtm = MainThreadMarker::new().expect("WebKit runs on the main thread");
         let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
         unsafe {
-            configuration
-                .setApplicationNameForUserAgent(Some(&ns(browser_user_agent_suffix())));
+            configuration.setApplicationNameForUserAgent(Some(&ns(browser_user_agent_suffix())));
         }
         if let Some(pool) = lean_process_pool() {
             let _: () = unsafe { msg_send![&*configuration, setProcessPool: &*pool] };
@@ -264,8 +262,7 @@ impl Page {
         unsafe {
             // Video and audio wait for a click; autoplaying video alone can
             // cost hundreds of megabytes in WebKit's GPU process.
-            configuration
-                .setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
+            configuration.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
             if lockdown {
                 configuration
                     .defaultWebpagePreferences()
@@ -323,11 +320,14 @@ impl Page {
         );
 
         let hooks: Retained<PageHooks> = unsafe {
-            msg_send![super(PageHooks::alloc(mtm).set_ivars(HookIvars {
-                tx,
-                id,
-                queued: Cell::new(false),
-            })), init]
+            msg_send![
+                super(PageHooks::alloc(mtm).set_ivars(HookIvars {
+                    tx,
+                    id,
+                    queued: Cell::new(false),
+                })),
+                init
+            ]
         };
         for key in OBSERVED {
             unsafe {
@@ -361,28 +361,17 @@ impl Page {
         }
 
         let page = Self { view, hooks };
-        page.load(address);
+        page.load(address, start_page);
         Ok(page)
-    }
-
-    /// The web content process currently drawing this page, if known.
-    pub fn process_id(&self) -> Option<i32> {
-        let view = self.view.webview();
-        let selector = Sel::register(c"_webProcessIdentifier");
-        if !responds(&view, selector) {
-            return None;
-        }
-        let pid: i32 = unsafe { MessageReceiver::send_message(&*view, selector, ()) };
-        (pid > 0).then_some(pid)
     }
 
     pub fn view(&self) -> &WebView {
         &self.view
     }
 
-    pub fn load(&self, address: &str) {
+    pub fn load(&self, address: &str, start_page: &str) {
         let result = if address == NEW_TAB {
-            self.view.load_html(START_PAGE)
+            self.view.load_html(start_page)
         } else {
             self.view.load_url(address)
         };
@@ -397,7 +386,10 @@ impl Page {
         let view = self.view.webview();
         unsafe {
             PageState {
-                url: view.URL().and_then(|u| u.absoluteString()).map_or_else(String::new, |u| u.to_string()),
+                url: view
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map_or_else(String::new, |u| u.to_string()),
                 title: view.title().map_or_else(String::new, |t| t.to_string()),
                 loading: view.isLoading(),
                 progress: view.estimatedProgress(),

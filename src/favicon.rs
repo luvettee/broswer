@@ -5,16 +5,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use block2::RcBlock;
-use objc2::rc::Retained;
 use objc2::AnyThread;
+use objc2::rc::Retained;
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
     NSGraphicsContext, NSImage, NSImageInterpolation,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSDictionary, NSError, NSHTTPURLResponse, NSRect, NSSize,
-    NSString, NSURL, NSURLResponse, NSURLSession,
-    NSURLSessionConfiguration,
+    MainThreadMarker, NSData, NSDictionary, NSError, NSHTTPURLResponse, NSRect, NSSize, NSString,
+    NSURL, NSURLResponse, NSURLSession, NSURLSessionConfiguration,
 };
 
 use crate::log;
@@ -32,9 +31,22 @@ fn dir() -> PathBuf {
 fn file(site: &str) -> PathBuf {
     let name: String = site
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     dir().join(format!("{name}.png"))
+}
+
+/// Reuse the existing on-disk favicon without making requests from the start page.
+pub fn cached_png(site: &str) -> Option<Vec<u8>> {
+    std::fs::read(file(site))
+        .ok()
+        .filter(|bytes| bytes.len() <= 16 * 1024)
 }
 
 /// A session without a response cache: icons are cached on disk by us, so
@@ -91,7 +103,10 @@ fn rasterize(source: &NSImage) -> Option<Retained<NSBitmapImageRep>> {
     context.setImageInterpolation(NSImageInterpolation::High);
     let size = PIXELS as f64;
     source.drawInRect_fromRect_operation_fraction(
-        NSRect::new(objc2_foundation::NSPoint::new(0.0, 0.0), NSSize::new(size, size)),
+        NSRect::new(
+            objc2_foundation::NSPoint::new(0.0, 0.0),
+            NSSize::new(size, size),
+        ),
         NSRect::ZERO,
         NSCompositingOperation::SourceOver,
         1.0,
@@ -192,7 +207,9 @@ impl Icons {
             rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
         } {
             let path = file(site);
-            if let Err(e) = std::fs::create_dir_all(dir()).and_then(|_| std::fs::write(&path, png.to_vec())) {
+            if let Err(e) =
+                std::fs::create_dir_all(dir()).and_then(|_| std::fs::write(&path, png.to_vec()))
+            {
                 log::log(&format!("icon cache write failed: {e}"));
             }
         }
@@ -202,4 +219,3 @@ impl Icons {
         true
     }
 }
-

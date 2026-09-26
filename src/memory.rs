@@ -47,7 +47,6 @@ mod mac {
         fn dispatch_source_get_data(source: *mut c_void) -> usize;
         fn dispatch_resume(object: *mut c_void);
         fn malloc_zone_pressure_relief(zone: *mut c_void, goal: usize) -> usize;
-        fn notify_post(name: *const libc::c_char) -> u32;
     }
 
     pub fn footprint(pid: libc::pid_t) -> Option<u64> {
@@ -111,13 +110,6 @@ mod mac {
         Some(Usage { app, helpers: helper_footprint(own) })
     }
 
-    /// Asks WebKit web processes to drop caches and collect garbage, as they
-    /// do under memory pressure. WebKit only listens for this system-wide, so
-    /// other WebKit apps (Safari, Mail) purge too; callers keep it rare.
-    pub fn purge_webkit() {
-        unsafe { notify_post(c"org.WebKit.lowMemory".as_ptr()) };
-    }
-
     pub fn trim() {
         unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
     }
@@ -157,7 +149,7 @@ mod mac {
 }
 
 #[cfg(target_os = "macos")]
-pub use mac::{footprint, purge_webkit, trim, usage, watch_pressure};
+pub use mac::{trim, usage, watch_pressure};
 
 #[cfg(not(target_os = "macos"))]
 pub fn usage() -> Option<Usage> {
@@ -166,9 +158,6 @@ pub fn usage() -> Option<Usage> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn trim() {}
-
-#[cfg(not(target_os = "macos"))]
-pub fn purge_webkit() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn footprint(_pid: i32) -> Option<u64> {
