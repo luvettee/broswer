@@ -13,6 +13,7 @@ objc2-core-foundation = "0.3"
 objc2-foundation = { version = "0.3.2", features = ["objc2-core-foundation"] }
 libc = "0.2"
 block2 = "0.6"
+base64 = "0.22"
 objc2-web-kit = { version = "0.3.2", features = ["WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "block2"] }
 
 [profile.release]

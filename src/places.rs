@@ -131,7 +131,11 @@ impl History {
         };
         self.entries.push(Visit {
             last: now(),
-            title: if title.is_empty() { visit.title } else { title.to_string() },
+            title: if title.is_empty() {
+                visit.title
+            } else {
+                title.to_string()
+            },
             ..visit
         });
         if self.entries.len() > HISTORY_LIMIT {
@@ -160,6 +164,14 @@ impl History {
     pub fn recent(&self, n: usize) -> impl Iterator<Item = &Visit> {
         self.entries.iter().rev().take(n)
     }
+
+    /// Most visited pages, using the latest visit to break ties.
+    pub fn frequent(&self, n: usize) -> Vec<&Visit> {
+        let mut visits: Vec<_> = self.entries.iter().collect();
+        visits.sort_by(|a, b| b.visits.cmp(&a.visits).then_with(|| b.last.cmp(&a.last)));
+        visits.truncate(n);
+        visits
+    }
 }
 
 pub struct Bookmark {
@@ -180,7 +192,9 @@ impl Bookmarks {
     }
 
     fn file_time() -> Option<SystemTime> {
-        std::fs::metadata(Self::path()).and_then(|m| m.modified()).ok()
+        std::fs::metadata(Self::path())
+            .and_then(|m| m.modified())
+            .ok()
     }
 
     pub fn load() -> Self {

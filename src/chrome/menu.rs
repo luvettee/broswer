@@ -1,18 +1,19 @@
 //! The menu bar, the protection menu, and the object that turns AppKit
 //! actions into browser messages.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSButton, NSControl, NSControlTextEditingDelegate, NSEventModifierFlags,
-    NSMenu, NSMenuItem, NSSearchFieldDelegate, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSButton, NSControl,
+    NSControlTextEditingDelegate, NSEventModifierFlags, NSMenu, NSMenuItem, NSSearchFieldDelegate,
+    NSTextField, NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{NSNotification, NSPoint};
 
-use super::kit::ns;
+use super::kit::{ns, rect};
 use crate::blocker::LISTS;
 use crate::msg::{Msg, MsgSender};
 
@@ -25,6 +26,7 @@ pub struct ActionIvars {
     /// Addresses behind the dynamic Bookmarks and History menu items, by tag.
     bookmark_urls: RefCell<Vec<String>>,
     history_urls: RefCell<Vec<String>>,
+    idle_minutes: Cell<u8>,
 }
 
 fn shift_held(mtm: MainThreadMarker) -> bool {
@@ -163,6 +165,40 @@ define_class!(
         #[unsafe(method(toggleLockdown:))]
         fn toggle_lockdown(&self, _sender: Option<&AnyObject>) {
             self.send(Msg::ToggleLockdown);
+        }
+
+        #[unsafe(method(setIdleMinutes:))]
+        fn set_idle_minutes(&self, sender: Option<&NSMenuItem>) {
+            if let Some(item) = sender {
+                self.send(Msg::SetIdleMinutes((item.tag() != 0).then_some(item.tag() as u8)));
+            }
+        }
+
+        #[unsafe(method(setCustomIdleMinutes:))]
+        fn set_custom_idle_minutes(&self, _sender: Option<&AnyObject>) {
+            let mtm = MainThreadMarker::new().unwrap();
+            loop {
+                let alert = NSAlert::new(mtm);
+                alert.setMessageText(&ns("Unload inactive tabs after"));
+                alert.setInformativeText(&ns("Enter a whole number of minutes from 1 to 60."));
+                let input = NSTextField::textFieldWithString(
+                    &ns(&self.ivars().idle_minutes.get().to_string()),
+                    mtm,
+                );
+                input.setFrame(rect(0.0, 0.0, 220.0, 24.0));
+                alert.setAccessoryView(Some(&input));
+                alert.addButtonWithTitle(&ns("Save"));
+                alert.addButtonWithTitle(&ns("Cancel"));
+                if alert.runModal() != NSAlertFirstButtonReturn {
+                    return;
+                }
+                if let Ok(minutes) = input.stringValue().to_string().trim().parse::<u8>()
+                    && (1..=60).contains(&minutes)
+                {
+                    self.send(Msg::SetIdleMinutes(Some(minutes)));
+                    return;
+                }
+            }
         }
 
         #[unsafe(method(updateFilters:))]
@@ -350,12 +386,17 @@ impl Actions {
             protection_menu: RefCell::new(None),
             bookmark_urls: RefCell::new(Vec::new()),
             history_urls: RefCell::new(Vec::new()),
+            idle_minutes: Cell::new(30),
         });
         unsafe { msg_send![super(this), init] }
     }
 
     pub fn tx(&self) -> MsgSender {
         self.ivars().tx.clone()
+    }
+
+    pub fn set_current_idle_minutes(&self, minutes: Option<u8>) {
+        self.ivars().idle_minutes.set(minutes.unwrap_or(30));
     }
 
     fn send(&self, msg: Msg) {
@@ -429,7 +470,11 @@ pub fn fill_places(
         let empty = item(
             menu,
             None,
-            if bookmarks { "No Bookmarks" } else { "No History" },
+            if bookmarks {
+                "No Bookmarks"
+            } else {
+                "No History"
+            },
             sel!(openBookmark:),
             "",
         );
@@ -465,7 +510,13 @@ fn with_mods(item: Retained<NSMenuItem>, mods: NSEventModifierFlags) -> Retained
 }
 
 /// A second shortcut for an existing command, invisible in the menu.
-fn hidden_alias(menu: &NSMenu, target: &AnyObject, action: Sel, key: &str, mods: NSEventModifierFlags) {
+fn hidden_alias(
+    menu: &NSMenu,
+    target: &AnyObject,
+    action: Sel,
+    key: &str,
+    mods: NSEventModifierFlags,
+) {
     let alias = with_mods(item(menu, Some(target), "", action, key), mods);
     alias.setHidden(true);
     alias.setAllowsKeyEquivalentWhenHidden(true);
@@ -488,6 +539,8 @@ pub struct ProtectionMenu {
     pub lists: Vec<Retained<NSMenuItem>>,
     pub generic_hiding: Retained<NSMenuItem>,
     pub lockdown: Retained<NSMenuItem>,
+    pub idle_minutes: Vec<Retained<NSMenuItem>>,
+    pub custom_idle: Retained<NSMenuItem>,
 }
 
 pub fn protection_menu(mtm: MainThreadMarker, target: &AnyObject) -> ProtectionMenu {
@@ -496,16 +549,35 @@ pub fn protection_menu(mtm: MainThreadMarker, target: &AnyObject) -> ProtectionM
     fill_protection_menu(mtm, &menu, target)
 }
 
-fn fill_protection_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &AnyObject) -> ProtectionMenu {
+fn fill_protection_menu(
+    mtm: MainThreadMarker,
+    menu: &NSMenu,
+    target: &AnyObject,
+) -> ProtectionMenu {
     let t = Some(target);
     menu.setAutoenablesItems(false);
     let global = with_mods(
-        item(menu, t, "Block Ads and Trackers", sel!(toggleProtection:), "b"),
+        item(
+            menu,
+            t,
+            "Block Ads and Trackers",
+            sel!(toggleProtection:),
+            "b",
+        ),
         NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
     );
-    let site = item(menu, t, "Block on This Site", sel!(toggleSiteProtection:), "");
+    let site = item(
+        menu,
+        t,
+        "Block on This Site",
+        sel!(toggleSiteProtection:),
+        "",
+    );
     menu.addItem(&NSMenuItem::separatorItem(mtm));
-    menu.addItem(&NSMenuItem::sectionHeaderWithTitle(&ns("Filter Lists"), mtm));
+    menu.addItem(&NSMenuItem::sectionHeaderWithTitle(
+        &ns("Filter Lists"),
+        mtm,
+    ));
     let lists = LISTS
         .iter()
         .enumerate()
@@ -517,7 +589,13 @@ fn fill_protection_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &AnyObject
         .collect();
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     menu.addItem(&NSMenuItem::sectionHeaderWithTitle(&ns("Memory"), mtm));
-    let generic_hiding = item(menu, t, "Hide Ads on Every Site", sel!(toggleGenericHiding:), "");
+    let generic_hiding = item(
+        menu,
+        t,
+        "Hide Ads on Every Site",
+        sel!(toggleGenericHiding:),
+        "",
+    );
     generic_hiding.setToolTip(Some(&ns(
         "Also hides ad placeholders using rules for all sites. Costs up to 100 MB more on heavy pages.",
     )));
@@ -526,8 +604,31 @@ fn fill_protection_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &AnyObject
         "Turns off the JavaScript compiler, WebGL, and other complex web features. Pages use far less memory and are harder to attack, but heavy web apps run slower.",
     )));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    let idle_menu = submenu(mtm, menu, "Unload Inactive Tabs After");
+    let idle_minutes = [0, 1, 5, 10, 15, 30, 45, 60]
+        .into_iter()
+        .map(|minutes| {
+            let title = match minutes {
+                0 => "Never".to_string(),
+                1 => "1 minute".to_string(),
+                60 => "1 hour".to_string(),
+                _ => format!("{minutes} minutes"),
+            };
+            let entry = item(&idle_menu, t, &title, sel!(setIdleMinutes:), "");
+            entry.setTag(minutes);
+            entry
+        })
+        .collect();
+    let custom_idle = item(&idle_menu, t, "Custom…", sel!(setCustomIdleMinutes:), "");
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
     item(menu, t, "Update Filter Lists", sel!(updateFilters:), "");
-    item(menu, t, "Edit Custom Filters…", sel!(editCustomFilters:), "");
+    item(
+        menu,
+        t,
+        "Edit Custom Filters…",
+        sel!(editCustomFilters:),
+        "",
+    );
     ProtectionMenu {
         menu: menu.retain(),
         global,
@@ -535,6 +636,8 @@ fn fill_protection_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &AnyObject
         lists,
         generic_hiding,
         lockdown,
+        idle_minutes,
+        custom_idle,
     }
 }
 
@@ -549,17 +652,35 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     let app = NSApplication::sharedApplication(mtm);
 
     let app_menu = submenu(mtm, &main, "Browser");
-    item(&app_menu, None, "About Browser", sel!(orderFrontStandardAboutPanel:), "");
+    item(
+        &app_menu,
+        None,
+        "About Browser",
+        sel!(orderFrontStandardAboutPanel:),
+        "",
+    );
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     let services = submenu(mtm, &app_menu, "Services");
     app.setServicesMenu(Some(&services));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     item(&app_menu, None, "Hide Browser", sel!(hide:), "h");
     with_mods(
-        item(&app_menu, None, "Hide Others", sel!(hideOtherApplications:), "h"),
+        item(
+            &app_menu,
+            None,
+            "Hide Others",
+            sel!(hideOtherApplications:),
+            "h",
+        ),
         cmd | option,
     );
-    item(&app_menu, None, "Show All", sel!(unhideAllApplications:), "");
+    item(
+        &app_menu,
+        None,
+        "Show All",
+        sel!(unhideAllApplications:),
+        "",
+    );
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     item(&app_menu, None, "Quit Browser", sel!(terminate:), "q");
 
@@ -579,7 +700,13 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     item(&edit, None, "Copy", sel!(copy:), "c");
     item(&edit, None, "Paste", sel!(paste:), "v");
     with_mods(
-        item(&edit, None, "Paste and Match Style", sel!(pasteAsPlainText:), "v"),
+        item(
+            &edit,
+            None,
+            "Paste and Match Style",
+            sel!(pasteAsPlainText:),
+            "v",
+        ),
         cmd | shift | option,
     );
     item(&edit, None, "Select All", sel!(selectAll:), "a");
@@ -587,7 +714,10 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     let find = submenu(mtm, &edit, "Find");
     item(&find, t, "Find…", sel!(showFind:), "f");
     item(&find, t, "Find Next", sel!(findNext:), "g");
-    with_mods(item(&find, t, "Find Previous", sel!(findPrevious:), "g"), cmd | shift);
+    with_mods(
+        item(&find, t, "Find Previous", sel!(findPrevious:), "g"),
+        cmd | shift,
+    );
 
     let view = submenu(mtm, &main, "View");
     item(&view, t, "Reload Page", sel!(doReload:), "r");
@@ -598,9 +728,18 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     hidden_alias(&view, target, sel!(zoomIn:), "=", cmd);
     item(&view, t, "Zoom Out", sel!(zoomOut:), "-");
     view.addItem(&NSMenuItem::separatorItem(mtm));
-    let sidebar = with_mods(item(&view, t, "Hide Sidebar", sel!(toggleSidebar:), "s"), cmd | control);
+    let sidebar = with_mods(
+        item(&view, t, "Hide Sidebar", sel!(toggleSidebar:), "s"),
+        cmd | control,
+    );
     with_mods(
-        item(&view, None, "Enter Full Screen", sel!(toggleFullScreen:), "f"),
+        item(
+            &view,
+            None,
+            "Enter Full Screen",
+            sel!(toggleFullScreen:),
+            "f",
+        ),
         cmd | control,
     );
 
@@ -608,13 +747,25 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     item(&history, t, "Back", sel!(goBack:), "[");
     item(&history, t, "Forward", sel!(goForward:), "]");
     history.addItem(&NSMenuItem::separatorItem(mtm));
-    with_mods(item(&history, t, "Reopen Closed Tab", sel!(reopenTab:), "t"), cmd | shift);
+    with_mods(
+        item(&history, t, "Reopen Closed Tab", sel!(reopenTab:), "t"),
+        cmd | shift,
+    );
     item(&history, t, "Clear History", sel!(clearHistory:), "");
     history.addItem(&NSMenuItem::separatorItem(mtm));
-    history.addItem(&NSMenuItem::sectionHeaderWithTitle(&ns("Recently Visited"), mtm));
+    history.addItem(&NSMenuItem::sectionHeaderWithTitle(
+        &ns("Recently Visited"),
+        mtm,
+    ));
 
     let bookmarks = submenu(mtm, &main, "Bookmarks");
-    item(&bookmarks, t, "Bookmark This Page", sel!(toggleBookmark:), "d");
+    item(
+        &bookmarks,
+        t,
+        "Bookmark This Page",
+        sel!(toggleBookmark:),
+        "d",
+    );
     item(&bookmarks, t, "Edit Bookmarks…", sel!(editBookmarks:), "");
     bookmarks.addItem(&NSMenuItem::separatorItem(mtm));
 
@@ -622,7 +773,10 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     let protection = fill_protection_menu(mtm, &protection, target);
 
     let tabs = submenu(mtm, &main, "Tabs");
-    with_mods(item(&tabs, t, "Show Next Tab", sel!(nextTab:), "\t"), control);
+    with_mods(
+        item(&tabs, t, "Show Next Tab", sel!(nextTab:), "\t"),
+        control,
+    );
     with_mods(
         item(&tabs, t, "Show Previous Tab", sel!(previousTab:), "\t"),
         control | shift,
@@ -643,7 +797,13 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
     item(&window, None, "Minimize", sel!(performMiniaturize:), "m");
     item(&window, None, "Zoom", sel!(performZoom:), "");
     window.addItem(&NSMenuItem::separatorItem(mtm));
-    item(&window, None, "Bring All to Front", sel!(arrangeInFront:), "");
+    item(
+        &window,
+        None,
+        "Bring All to Front",
+        sel!(arrangeInFront:),
+        "",
+    );
     app.setWindowsMenu(Some(&window));
 
     app.setMainMenu(Some(&main));
@@ -656,7 +816,12 @@ pub fn install(mtm: MainThreadMarker, target: &AnyObject) -> MenuBar {
 }
 
 /// Right-click menu for a tab row.
-pub fn tab_menu(mtm: MainThreadMarker, target: &AnyObject, id: u32, can_close_below: bool) -> Retained<NSMenu> {
+pub fn tab_menu(
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    id: u32,
+    can_close_below: bool,
+) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
     menu.setAutoenablesItems(false);
     let t = Some(target);
